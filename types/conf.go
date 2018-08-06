@@ -18,6 +18,9 @@ package types
 import (
 	"encoding/json"
 
+	"github.com/containernetworking/cni/libcni"
+	"github.com/containernetworking/cni/pkg/skel"
+	"github.com/containernetworking/cni/pkg/types"
 	"github.com/containernetworking/cni/pkg/types/current"
 	"github.com/containernetworking/cni/pkg/version"
 	"github.com/intel/multus-cni/logging"
@@ -26,24 +29,101 @@ import (
 const (
 	defaultCNIDir  = "/var/lib/cni/multus"
 	defaultConfDir = "/etc/cni/multus/net.d"
+	defaultBinDir  = "/opt/cni/bin"
 )
 
-// Convert raw CNI JSON into a DelegateNetConf structure
-func LoadDelegateNetConf(bytes []byte) (*DelegateNetConf, error) {
-	delegateConf := &DelegateNetConf{}
+func LoadDelegateNetConfList(bytes []byte, delegateConf *DelegateNetConf) error {
 
-	logging.Debugf("LoadDelegateNetConf: %v", bytes)
-	if err := json.Unmarshal(bytes, delegateConf); err != nil {
-		return nil, logging.Errorf("error unmarshalling delegate config: %v", err)
+	if err := json.Unmarshal(bytes, &delegateConf.ConfList); err != nil {
+		return logging.Errorf("err in unmarshalling delegate conflist: %v", err)
 	}
-	delegateConf.Bytes = bytes
+
+	if delegateConf.ConfList.Plugins == nil {
+		return logging.Errorf("delegate must have the 'type'or 'Plugin' field")
+	}
+	if delegateConf.ConfList.Plugins[0].Type == "" {
+		return logging.Errorf("a plugin delegate must have the 'type' field")
+	}
+	delegateConf.ConfListPlugin = true
+	return nil
+}
+
+// Convert raw CNI JSON into a DelegateNetConf structure
+func LoadDelegateNetConf(bytes []byte, ifnameRequest string) (*DelegateNetConf, error) {
+	delegateConf := &DelegateNetConf{}
+	logging.Debugf("LoadDelegateNetConf: %v", bytes)
+	if err := json.Unmarshal(bytes, &delegateConf.Conf); err != nil {
+		return nil, logging.Errorf("error in LoadDelegateNetConf - unmarshalling delegate config: %v", err)
+	}
 
 	// Do some minimal validation
-	if delegateConf.Type == "" {
-		return nil, logging.Errorf("delegate must have the 'type' field")
+	if delegateConf.Conf.Type == "" {
+		if err := LoadDelegateNetConfList(bytes, delegateConf); err != nil {
+			return nil, logging.Errorf("error in LoadDelegateNetConf: %v", err)
+		}
 	}
 
+	if ifnameRequest != "" {
+		delegateConf.IfnameRequest = ifnameRequest
+	}
+
+	delegateConf.Bytes = bytes
+
 	return delegateConf, nil
+}
+
+func LoadCNIRuntimeConf(args *skel.CmdArgs, k8sArgs *K8sArgs, ifName string) (*libcni.RuntimeConf, error) {
+
+	// In part, adapted from K8s pkg/kubelet/dockershim/network/cni/cni.go#buildCNIRuntimeConf
+	// Todo
+	// ingress, egress and bandwidth capability features as same as kubelet.
+	rt := &libcni.RuntimeConf{
+		ContainerID: args.ContainerID,
+		NetNS:       args.Netns,
+		IfName:      ifName,
+		Args: [][2]string{
+			{"IgnoreUnknown", "1"},
+			{"K8S_POD_NAMESPACE", string(k8sArgs.K8S_POD_NAMESPACE)},
+			{"K8S_POD_NAME", string(k8sArgs.K8S_POD_NAME)},
+			{"K8S_POD_INFRA_CONTAINER_ID", string(k8sArgs.K8S_POD_INFRA_CONTAINER_ID)},
+		},
+	}
+	return rt, nil
+}
+
+func LoadNetworkStatus(r types.Result, netName string, defaultNet bool) (*NetworkStatus, error) {
+	// Convert whatever the IPAM result was into the current Result type
+	result, err := current.NewResultFromResult(r)
+	if err != nil {
+		return nil, logging.Errorf("error convert the type.Result to current.Result: %v", err)
+	}
+
+	netstatus := &NetworkStatus{}
+	netstatus.Name = netName
+	netstatus.Default = defaultNet
+
+	for _, ifs := range result.Interfaces {
+		//Only pod interfaces can have sandbox information
+		if ifs.Sandbox != "" {
+			netstatus.Interface = ifs.Name
+			netstatus.Mac = ifs.Mac
+		}
+	}
+
+	for _, ipconfig := range result.IPs {
+		if ipconfig.Version == "4" && ipconfig.Address.IP.To4() != nil {
+			netstatus.IPs = append(netstatus.IPs, ipconfig.Address.IP.String())
+		}
+
+		if ipconfig.Version == "6" && ipconfig.Address.IP.To16() != nil {
+			netstatus.IPs = append(netstatus.IPs, ipconfig.Address.IP.String())
+		}
+	}
+
+	netstatus.DNS = result.DNS
+
+	return netstatus, nil
+
 }
 
 func LoadNetConf(bytes []byte) (*NetConf, error) {
@@ -92,8 +172,13 @@ func LoadNetConf(bytes []byte) (*NetConf, error) {
 	if netconf.CNIDir == "" {
 		netconf.CNIDir = defaultCNIDir
 	}
+
 	if netconf.ConfDir == "" {
 		netconf.ConfDir = defaultConfDir
+	}
+
+	if netconf.BinDir == "" {
+		netconf.BinDir = defaultBinDir
 	}
 
 	for idx, rawConf := range netconf.RawDelegates {
@@ -101,7 +186,7 @@ func LoadNetConf(bytes []byte) (*NetConf, error) {
 		if err != nil {
 			return nil, logging.Errorf("error marshalling delegate %d config: %v", idx, err)
 		}
-		delegateConf, err := LoadDelegateNetConf(bytes)
+		delegateConf, err := LoadDelegateNetConf(bytes, "")
 		if err != nil {
 			return nil, logging.Errorf("failed to load delegate %d config: %v", idx, err)
 		}

@@ -21,8 +21,8 @@ import (
 	"net"
 	"strings"
 
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	v1 "k8s.io/client-go/pkg/api/v1"
 
 	. "github.com/onsi/gomega"
 )
@@ -52,7 +52,7 @@ func (f *FakeKubeClient) GetRawWithPath(path string) ([]byte, error) {
 
 func (f *FakeKubeClient) AddNetConfig(namespace, name, data string) {
 	cr := fmt.Sprintf(`{
-  "apiVersion": "kubernetes.cni.cncf.io/v1",
+  "apiVersion": "k8s.cni.cncf.io/v1",
   "kind": "Network",
   "metadata": {
     "namespace": "%s",
@@ -64,19 +64,19 @@ func (f *FakeKubeClient) AddNetConfig(namespace, name, data string) {
 }`, namespace, name, strings.Replace(data, "\"", "\\\"", -1))
 	cr = strings.Replace(cr, "\n", "", -1)
 	cr = strings.Replace(cr, "\t", "", -1)
-	f.nets[fmt.Sprintf("/apis/kubernetes.cni.cncf.io/v1/namespaces/%s/networks/%s", namespace, name)] = cr
+	f.nets[fmt.Sprintf("/apis/k8s.cni.cncf.io/v1/namespaces/%s/network-attachment-definitions/%s", namespace, name)] = cr
 }
 
 func (f *FakeKubeClient) AddNetFile(namespace, name, filePath, fileData string) {
 	cr := fmt.Sprintf(`{
-  "apiVersion": "kubernetes.cni.cncf.io/v1",
+  "apiVersion": "k8s.cni.cncf.io/v1",
   "kind": "Network",
   "metadata": {
     "namespace": "%s",
     "name": "%s"
   }
 }`, namespace, name)
-	f.nets[fmt.Sprintf("/apis/kubernetes.cni.cncf.io/v1/namespaces/%s/networks/%s", namespace, name)] = cr
+	f.nets[fmt.Sprintf("/apis/k8s.cni.cncf.io/v1/namespaces/%s/network-attachment-definitions/%s", namespace, name)] = cr
 
 	err := ioutil.WriteFile(filePath, []byte(fileData), 0600)
 	Expect(err).NotTo(HaveOccurred())
@@ -90,6 +90,12 @@ func (f *FakeKubeClient) GetPod(namespace, name string) (*v1.Pod, error) {
 	}
 	f.PodCount++
 	return pod, nil
+}
+
+func (f *FakeKubeClient) UpdatePodStatus(pod *v1.Pod) (*v1.Pod, error) {
+	key := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+	f.pods[key] = pod
+	return f.pods[key], nil
 }
 
 func (f *FakeKubeClient) AddPod(pod *v1.Pod) {
@@ -113,7 +119,7 @@ func NewFakePod(name string, netAnnotation string) *v1.Pod {
 		netAnnotation = strings.Replace(netAnnotation, "\n", "", -1)
 		netAnnotation = strings.Replace(netAnnotation, "\t", "", -1)
 		pod.ObjectMeta.Annotations = map[string]string{
-			"kubernetes.v1.cni.cncf.io/networks": netAnnotation,
+			"k8s.v1.cni.cncf.io/networks": netAnnotation,
 		}
 	}
 	return pod
