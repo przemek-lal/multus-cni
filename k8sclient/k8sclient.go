@@ -28,6 +28,7 @@ import (
 	"github.com/containernetworking/cni/libcni"
 	"github.com/containernetworking/cni/pkg/skel"
 	cnitypes "github.com/containernetworking/cni/pkg/types"
+	"github.com/intel/multus-cni/logging"
 	"github.com/intel/multus-cni/types"
 )
 
@@ -55,9 +56,10 @@ func (d *defaultKubeClient) GetPod(namespace, name string) (*v1.Pod, error) {
 
 func createK8sClient(kubeconfig string) (KubeClient, error) {
 	// uses the current context in kubeconfig
+	logging.Debugf("Create k8s client with %s", kubeconfig)
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
-		return nil, fmt.Errorf("createK8sClient: failed to get context for the kubeconfig %v, refer Multus README.md for the usage guide: %v", kubeconfig, err)
+		return nil, logging.Errorf("createK8sClient: failed to get context for the kubeconfig %v, refer Multus README.md for the usage guide: %v", kubeconfig, err)
 	}
 
 	// creates the clientset
@@ -72,9 +74,10 @@ func createK8sClient(kubeconfig string) (KubeClient, error) {
 func getPodNetworkAnnotation(client KubeClient, k8sArgs types.K8sArgs) (string, string, error) {
 	var err error
 
+	logging.Debugf("getPodNetworkAnnotation, %v %v", client, k8sArgs)
 	pod, err := client.GetPod(string(k8sArgs.K8S_POD_NAMESPACE), string(k8sArgs.K8S_POD_NAME))
 	if err != nil {
-		return "", "", fmt.Errorf("getPodNetworkAnnotation: failed to query the pod %v in out of cluster comm: %v", string(k8sArgs.K8S_POD_NAME), err)
+		return "", "", logging.Errorf("getPodNetworkAnnotation: failed to query the pod %v in out of cluster comm: %v", string(k8sArgs.K8S_POD_NAME), err)
 	}
 
 	return pod.Annotations["kubernetes.v1.cni.cncf.io/networks"], pod.ObjectMeta.Namespace, nil
@@ -85,6 +88,7 @@ func parsePodNetworkObjectName(podnetwork string) (string, string, string, error
 	var netIfName string
 	var networkName string
 
+	logging.Debugf("parsePodNetworkObjectName: %s", podnetwork)
 	slashItems := strings.Split(podnetwork, "/")
 	if len(slashItems) == 2 {
 		netNsName = strings.TrimSpace(slashItems[0])
@@ -92,7 +96,7 @@ func parsePodNetworkObjectName(podnetwork string) (string, string, string, error
 	} else if len(slashItems) == 1 {
 		networkName = slashItems[0]
 	} else {
-		return "", "", "", fmt.Errorf("Invalid network object (failed at '/')")
+		return "", "", "", logging.Errorf("Invalid network object (failed at '/')")
 	}
 
 	atItems := strings.Split(networkName, "@")
@@ -100,7 +104,7 @@ func parsePodNetworkObjectName(podnetwork string) (string, string, string, error
 	if len(atItems) == 2 {
 		netIfName = strings.TrimSpace(atItems[1])
 	} else if len(atItems) != 1 {
-		return "", "", "", fmt.Errorf("Invalid network object (failed at '@')")
+		return "", "", "", logging.Errorf("Invalid network object (failed at '@')")
 	}
 
 	// Check and see if each item matches the specification for valid attachment name.
@@ -112,23 +116,25 @@ func parsePodNetworkObjectName(podnetwork string) (string, string, string, error
 	for i := range allItems {
 		matched, _ := regexp.MatchString("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", allItems[i])
 		if !matched && len([]rune(allItems[i])) > 0 {
-			return "", "", "", fmt.Errorf(fmt.Sprintf("Failed to parse: one or more items did not match comma-delimited format (must consist of lower case alphanumeric characters). Must start and end with an alphanumeric character), mismatch @ '%v'", allItems[i]))
+			return "", "", "", logging.Errorf(fmt.Sprintf("Failed to parse: one or more items did not match comma-delimited format (must consist of lower case alphanumeric characters). Must start and end with an alphanumeric character), mismatch @ '%v'", allItems[i]))
 		}
 	}
 
+	logging.Debugf("parsePodNetworkObjectName: parsed: %s %s %s", netNsName, networkName, netIfName)
 	return netNsName, networkName, netIfName, nil
 }
 
 func parsePodNetworkAnnotation(podNetworks, defaultNamespace string) ([]*types.NetworkSelectionElement, error) {
 	var networks []*types.NetworkSelectionElement
 
+	logging.Debugf("parsePodNetworkAnnotation: %s %s", podNetworks, defaultNamespace)
 	if podNetworks == "" {
-		return nil, fmt.Errorf("parsePodNetworkAnnotation: pod annotation not having \"network\" as key, refer Multus README.md for the usage guide")
+		return nil, logging.Errorf("parsePodNetworkAnnotation: pod annotation not having \"network\" as key, refer Multus README.md for the usage guide")
 	}
 
 	if strings.IndexAny(podNetworks, "[{\"") >= 0 {
 		if err := json.Unmarshal([]byte(podNetworks), &networks); err != nil {
-			return nil, fmt.Errorf("parsePodNetworkAnnotation: failed to parse pod Network Attachment Selection Annotation JSON format: %v", err)
+			return nil, logging.Errorf("parsePodNetworkAnnotation: failed to parse pod Network Attachment Selection Annotation JSON format: %v", err)
 		}
 	} else {
 		// Comma-delimited list of network attachment object names
@@ -139,7 +145,7 @@ func parsePodNetworkAnnotation(podNetworks, defaultNamespace string) ([]*types.N
 			// Parse network name (i.e. <namespace>/<network name>@<ifname>)
 			netNsName, networkName, netIfName, err := parsePodNetworkObjectName(item)
 			if err != nil {
-				return nil, fmt.Errorf("parsePodNetworkAnnotation: %v", err)
+				return nil, logging.Errorf("parsePodNetworkAnnotation: %v", err)
 			}
 
 			networks = append(networks, &types.NetworkSelectionElement{
@@ -161,6 +167,7 @@ func parsePodNetworkAnnotation(podNetworks, defaultNamespace string) ([]*types.N
 
 func getCNIConfig(name string, ifname string, confdir string) (string, error) {
 
+	logging.Debugf("getCNIConfig: %s %s %s", name, ifname, confdir)
 	// In the absence of valid keys in a Spec, the runtime (or
 	// meta-plugin) should load and execute a CNI .configlist
 	// or .config (in that order) file on-disk whose JSON
@@ -172,22 +179,22 @@ func getCNIConfig(name string, ifname string, confdir string) (string, error) {
 	files, err := libcni.ConfFiles(confdir, []string{".conf", ".json"})
 	switch {
 	case err != nil:
-		return "", fmt.Errorf("No networks found in %s", confdir)
+		return "", logging.Errorf("No networks found in %s", confdir)
 	case len(files) == 0:
-		return "", fmt.Errorf("No networks found in %s", confdir)
+		return "", logging.Errorf("No networks found in %s", confdir)
 	}
 
 	for _, confFile := range files {
 		conf, err := libcni.ConfFromFile(confFile)
 		if err != nil {
-			return "", fmt.Errorf("Error loading CNI config file %s: %v", confFile, err)
+			return "", logging.Errorf("Error loading CNI config file %s: %v", confFile, err)
 		}
 
 		if conf.Network.Name == name {
 			// Ensure the config has a "type" so we know what plugin to run.
 			// Also catches the case where somebody put a conflist into a conf file.
 			if conf.Network.Type == "" {
-				return "", fmt.Errorf("Error loading CNI config file %s: no 'type'; perhaps this is a .conflist?", confFile)
+				return "", logging.Errorf("Error loading CNI config file %s: no 'type'; perhaps this is a .conflist?", confFile)
 			}
 
 			return getConfig(string(conf.Bytes[:]), ifname), nil
@@ -195,12 +202,13 @@ func getCNIConfig(name string, ifname string, confdir string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("no network available in the name %s in cni dir %s", name, confdir)
+	return "", logging.Errorf("no network available in the name %s in cni dir %s", name, confdir)
 }
 
 func getPlugin(plugin string, name string, ifname string) string {
 	tmpconfig := []string{}
 
+	logging.Debugf("getPlugin: %s %s %s", plugin, name, ifname)
 	tmpconfig = append(tmpconfig, fmt.Sprintf(`{"cniVersion": "0.3.1" , "name": "%s", "type": "%s"`, name, plugin))
 
 	if ifname != "" {
@@ -216,6 +224,7 @@ func getPlugin(plugin string, name string, ifname string) string {
 func getConfig(config string, ifname string) string {
 	tmpconfig := []string{}
 
+	logging.Debugf("getConfig: %s %s", config, ifname)
 	config = strings.TrimSpace(config)
 	tmpconfig = append(tmpconfig, config[:1])
 
@@ -231,12 +240,13 @@ func getConfig(config string, ifname string) string {
 
 func getNetSpec(ns types.NetworkSpec, name string, ifname string) (string, error) {
 
+	logging.Debugf("getNetSpec: %v %s %s", ns, name, ifname)
 	if ns.Plugin == "" && ns.Config == "" {
-		return "", fmt.Errorf("Network Object spec plugin and config can't be empty")
+		return "", logging.Errorf("Network Object spec plugin and config can't be empty")
 	}
 
 	if ns.Plugin != "" && ns.Config != "" {
-		return "", fmt.Errorf("Network Object spec can't have both plugin and config")
+		return "", logging.Errorf("Network Object spec can't have both plugin and config")
 	}
 
 	if ns.Plugin != "" {
@@ -263,20 +273,21 @@ func cniConfigFromNetworkResource(customResource *types.Network, net *types.Netw
 	var config string
 	var err error
 
+	logging.Debugf("cniConfigFromNetworkResource: %v %v %s", customResource, net, confdir)
 	if (types.NetworkSpec{}) == customResource.Spec {
 		// Network Spec empty; generate delegate from CNI JSON config
 		// from the configuration directory that has the same network
 		// name as the custom resource
 		config, err = getCNIConfig(customResource.Metadata.Name, net.InterfaceRequest, confdir)
 		if err != nil {
-			return "", fmt.Errorf("cniConfigFromNetworkResource: err in getCNIConfig: %v", err)
+			return "", logging.Errorf("cniConfigFromNetworkResource: err in getCNIConfig: %v", err)
 		}
 	} else {
 		// Generate delegate from CNI configuration embedded in the
 		// custom resource
 		config, err = getNetSpec(customResource.Spec, customResource.Metadata.Name, net.InterfaceRequest)
 		if err != nil {
-			return "", fmt.Errorf("cniConfigFromNetworkResource: err in getNetSpec: %v", err)
+			return "", logging.Errorf("cniConfigFromNetworkResource: err in getNetSpec: %v", err)
 		}
 	}
 
@@ -284,15 +295,17 @@ func cniConfigFromNetworkResource(customResource *types.Network, net *types.Netw
 }
 
 func getKubernetesDelegate(client KubeClient, net *types.NetworkSelectionElement, confdir string) (*types.DelegateNetConf, error) {
+
+	logging.Debugf("getKubernetesDelegate: %v %v %s", client, net, confdir)
 	rawPath := fmt.Sprintf("/apis/kubernetes.cni.cncf.io/v1/namespaces/%s/networks/%s", net.Namespace, net.Name)
 	netData, err := client.GetRawWithPath(rawPath)
 	if err != nil {
-		return nil, fmt.Errorf("getKubernetesDelegate: failed to get network resource, refer Multus README.md for the usage guide: %v", err)
+		return nil, logging.Errorf("getKubernetesDelegate: failed to get network resource, refer Multus README.md for the usage guide: %v", err)
 	}
 
 	customResource := &types.Network{}
 	if err := json.Unmarshal(netData, customResource); err != nil {
-		return nil, fmt.Errorf("getKubernetesDelegate: failed to get the netplugin data: %v", err)
+		return nil, logging.Errorf("getKubernetesDelegate: failed to get the netplugin data: %v", err)
 	}
 
 	cniConfig, err := cniConfigFromNetworkResource(customResource, net, confdir)
@@ -316,6 +329,7 @@ type KubeClient interface {
 func GetK8sNetwork(args *skel.CmdArgs, kubeconfig string, k8sclient KubeClient, confdir string) ([]*types.DelegateNetConf, error) {
 	k8sArgs := types.K8sArgs{}
 
+	logging.Debugf("GetK8sNetwork: %v %s %v %s", args, kubeconfig, k8sclient, confdir)
 	err := cnitypes.LoadArgs(args.Args, &k8sArgs)
 	if err != nil {
 		return nil, err
@@ -347,7 +361,7 @@ func GetK8sNetwork(args *skel.CmdArgs, kubeconfig string, k8sclient KubeClient, 
 	for _, net := range networks {
 		delegate, err := getKubernetesDelegate(k8sclient, net, confdir)
 		if err != nil {
-			return nil, fmt.Errorf("GetK8sNetwork: failed getting the delegate: %v", err)
+			return nil, logging.Errorf("GetK8sNetwork: failed getting the delegate: %v", err)
 		}
 		delegates = append(delegates, delegate)
 	}

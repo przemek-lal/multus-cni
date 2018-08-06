@@ -31,20 +31,21 @@ import (
 	"github.com/containernetworking/cni/pkg/version"
 	"github.com/containernetworking/plugins/pkg/ns"
 	k8s "github.com/intel/multus-cni/k8sclient"
+	"github.com/intel/multus-cni/logging"
 	"github.com/intel/multus-cni/types"
 	"github.com/vishvananda/netlink"
 )
 
 func saveScratchNetConf(containerID, dataDir string, netconf []byte) error {
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
-		return fmt.Errorf("failed to create the multus data directory(%q): %v", dataDir, err)
+		return logging.Errorf("failed to create the multus data directory(%q): %v", dataDir, err)
 	}
 
 	path := filepath.Join(dataDir, containerID)
 
 	err := ioutil.WriteFile(path, netconf, 0600)
 	if err != nil {
-		return fmt.Errorf("failed to write container data in the path(%q): %v", path, err)
+		return logging.Errorf("failed to write container data in the path(%q): %v", path, err)
 	}
 
 	return err
@@ -74,11 +75,11 @@ func getIfname(delegate *types.DelegateNetConf, argif string, idx int) string {
 func saveDelegates(containerID, dataDir string, delegates []*types.DelegateNetConf) error {
 	delegatesBytes, err := json.Marshal(delegates)
 	if err != nil {
-		return fmt.Errorf("error serializing delegate netconf: %v", err)
+		return logging.Errorf("error serializing delegate netconf: %v", err)
 	}
 
 	if err = saveScratchNetConf(containerID, dataDir, delegatesBytes); err != nil {
-		return fmt.Errorf("error in saving the  delegates : %v", err)
+		return logging.Errorf("error in saving the  delegates : %v", err)
 	}
 
 	return err
@@ -87,7 +88,7 @@ func saveDelegates(containerID, dataDir string, delegates []*types.DelegateNetCo
 func validateIfName(nsname string, ifname string) error {
 	podNs, err := ns.GetNS(nsname)
 	if err != nil {
-		return fmt.Errorf("no netns: %v", err)
+		return logging.Errorf("no netns: %v", err)
 	}
 
 	err = podNs.Do(func(_ ns.NetNS) error {
@@ -98,44 +99,47 @@ func validateIfName(nsname string, ifname string) error {
 			}
 			return err
 		}
-		return fmt.Errorf("ifname %s is already exist", ifname)
+		return logging.Errorf("ifname %s is already exist", ifname)
 	})
 
 	return err
 }
 
 func delegateAdd(exec invoke.Exec, ifName string, delegate *types.DelegateNetConf) (cnitypes.Result, error) {
+	logging.Debugf("delegateAdd: %v %s %v", exec, ifName, delegate)
 	if os.Setenv("CNI_IFNAME", ifName) != nil {
-		return nil, fmt.Errorf("Multus: error in setting CNI_IFNAME")
+		return nil, logging.Errorf("Multus: error in setting CNI_IFNAME")
 	}
 
 	if err := validateIfName(os.Getenv("CNI_NETNS"), ifName); err != nil {
-		return nil, fmt.Errorf("cannot set %q ifname to %q: %v", delegate.Type, ifName, err)
+		return nil, logging.Errorf("cannot set %q ifname to %q: %v", delegate.Type, ifName, err)
 	}
 
 	result, err := invoke.DelegateAdd(delegate.Type, delegate.Bytes, exec)
 	if err != nil {
-		return nil, fmt.Errorf("Multus: error in invoke Delegate add - %q: %v", delegate.Type, err)
+		return nil, logging.Errorf("Multus: error in invoke Delegate add - %q: %v", delegate.Type, err)
 	}
 
 	return result, nil
 }
 
 func delegateDel(exec invoke.Exec, ifName string, delegateConf *types.DelegateNetConf) error {
+	logging.Debugf("delegateDel: %v %s %v", exec, ifName, delegateConf)
 	if os.Setenv("CNI_IFNAME", ifName) != nil {
-		return fmt.Errorf("Multus: error in setting CNI_IFNAME")
+		return logging.Errorf("Multus: error in setting CNI_IFNAME")
 	}
 
 	if err := invoke.DelegateDel(delegateConf.Type, delegateConf.Bytes, exec); err != nil {
-		return fmt.Errorf("Multus: error in invoke Delegate del - %q: %v", delegateConf.Type, err)
+		return logging.Errorf("Multus: error in invoke Delegate del - %q: %v", delegateConf.Type, err)
 	}
 
 	return nil
 }
 
 func delPlugins(exec invoke.Exec, argIfname string, delegates []*types.DelegateNetConf, lastIdx int) error {
+	logging.Debugf("delPlugins: %v %s %v %d", exec, argIfname, delegates, lastIdx)
 	if os.Setenv("CNI_COMMAND", "DEL") != nil {
-		return fmt.Errorf("Multus: error in setting CNI_COMMAND to DEL")
+		return logging.Errorf("Multus: error in setting CNI_COMMAND to DEL")
 	}
 
 	for idx := lastIdx; idx >= 0; idx-- {
@@ -150,9 +154,10 @@ func delPlugins(exec invoke.Exec, argIfname string, delegates []*types.DelegateN
 
 func cmdAdd(args *skel.CmdArgs, exec invoke.Exec, kubeClient k8s.KubeClient) (cnitypes.Result, error) {
 	var nopodnet bool
+	logging.Debugf("cmdAdd: %v %v %v", args, exec, kubeClient)
 	n, err := types.LoadNetConf(args.StdinData)
 	if err != nil {
-		return nil, fmt.Errorf("err in loading netconf: %v", err)
+		return nil, logging.Errorf("err in loading netconf: %v", err)
 	}
 
 	if n.Kubeconfig != "" {
@@ -161,7 +166,7 @@ func cmdAdd(args *skel.CmdArgs, exec invoke.Exec, kubeClient k8s.KubeClient) (cn
 			if _, ok := err.(*k8s.NoK8sNetworkError); ok {
 				nopodnet = true
 			} else {
-				return nil, fmt.Errorf("Multus: Err in getting k8s network from pod: %v", err)
+				return nil, logging.Errorf("Multus: Err in getting k8s network from pod: %v", err)
 			}
 		}
 
@@ -172,7 +177,7 @@ func cmdAdd(args *skel.CmdArgs, exec invoke.Exec, kubeClient k8s.KubeClient) (cn
 
 	if n.Kubeconfig == "" || nopodnet {
 		if err := saveDelegates(args.ContainerID, n.CNIDir, n.Delegates); err != nil {
-			return nil, fmt.Errorf("Multus: Err in saving the delegates: %v", err)
+			return nil, logging.Errorf("Multus: Err in saving the delegates: %v", err)
 		}
 	}
 
@@ -202,6 +207,7 @@ func cmdAdd(args *skel.CmdArgs, exec invoke.Exec, kubeClient k8s.KubeClient) (cn
 }
 
 func cmdGet(args *skel.CmdArgs, exec invoke.Exec, kubeClient k8s.KubeClient) (cnitypes.Result, error) {
+	logging.Debugf("cmdGet: %v %v %v", args, exec, kubeClient)
 	in, err := types.LoadNetConf(args.StdinData)
 	if err != nil {
 		return nil, err
@@ -215,6 +221,7 @@ func cmdGet(args *skel.CmdArgs, exec invoke.Exec, kubeClient k8s.KubeClient) (cn
 func cmdDel(args *skel.CmdArgs, exec invoke.Exec, kubeClient k8s.KubeClient) error {
 	var nopodnet bool
 
+	logging.Debugf("cmdDel: %v %v %v", args, exec, kubeClient)
 	in, err := types.LoadNetConf(args.StdinData)
 	if err != nil {
 		return err
@@ -226,7 +233,7 @@ func cmdDel(args *skel.CmdArgs, exec invoke.Exec, kubeClient k8s.KubeClient) err
 			if _, ok := err.(*k8s.NoK8sNetworkError); ok {
 				nopodnet = true
 			} else {
-				return fmt.Errorf("Multus: Err in getting k8s network from pod: %v", err)
+				return logging.Errorf("Multus: Err in getting k8s network from pod: %v", err)
 			}
 		}
 
@@ -242,11 +249,11 @@ func cmdDel(args *skel.CmdArgs, exec invoke.Exec, kubeClient k8s.KubeClient) err
 				// Per spec should ignore error if resources are missing / already removed
 				return nil
 			}
-			return fmt.Errorf("Multus: Err in  reading the delegates: %v", err)
+			return logging.Errorf("Multus: Err in  reading the delegates: %v", err)
 		}
 
 		if err := json.Unmarshal(netconfBytes, &in.Delegates); err != nil {
-			return fmt.Errorf("Multus: failed to load netconf: %v", err)
+			return logging.Errorf("Multus: failed to load netconf: %v", err)
 		}
 	}
 

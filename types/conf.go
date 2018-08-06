@@ -17,11 +17,10 @@ package types
 
 import (
 	"encoding/json"
-	"fmt"
 
-	"github.com/intel/multus-cni/logging"
 	"github.com/containernetworking/cni/pkg/types/current"
 	"github.com/containernetworking/cni/pkg/version"
+	"github.com/intel/multus-cni/logging"
 )
 
 const (
@@ -32,14 +31,16 @@ const (
 // Convert raw CNI JSON into a DelegateNetConf structure
 func LoadDelegateNetConf(bytes []byte) (*DelegateNetConf, error) {
 	delegateConf := &DelegateNetConf{}
+
+	logging.Debugf("LoadDelegateNetConf: %v", bytes)
 	if err := json.Unmarshal(bytes, delegateConf); err != nil {
-		return nil, fmt.Errorf("error unmarshalling delegate config: %v", err)
+		return nil, logging.Errorf("error unmarshalling delegate config: %v", err)
 	}
 	delegateConf.Bytes = bytes
 
 	// Do some minimal validation
 	if delegateConf.Type == "" {
-		return nil, fmt.Errorf("delegate must have the 'type' field")
+		return nil, logging.Errorf("delegate must have the 'type' field")
 	}
 
 	return delegateConf, nil
@@ -47,8 +48,10 @@ func LoadDelegateNetConf(bytes []byte) (*DelegateNetConf, error) {
 
 func LoadNetConf(bytes []byte) (*NetConf, error) {
 	netconf := &NetConf{}
+
+	logging.Debugf("LoadNetConf: %v", bytes)
 	if err := json.Unmarshal(bytes, netconf); err != nil {
-		return nil, fmt.Errorf("failed to load netconf: %v", err)
+		return nil, logging.Errorf("failed to load netconf: %v", err)
 	}
 
 	// Logging
@@ -63,16 +66,16 @@ func LoadNetConf(bytes []byte) (*NetConf, error) {
 	if netconf.RawPrevResult != nil {
 		resultBytes, err := json.Marshal(netconf.RawPrevResult)
 		if err != nil {
-			return nil, fmt.Errorf("could not serialize prevResult: %v", err)
+			return nil, logging.Errorf("could not serialize prevResult: %v", err)
 		}
 		res, err := version.NewResult(netconf.CNIVersion, resultBytes)
 		if err != nil {
-			return nil, fmt.Errorf("could not parse prevResult: %v", err)
+			return nil, logging.Errorf("could not parse prevResult: %v", err)
 		}
 		netconf.RawPrevResult = nil
 		netconf.PrevResult, err = current.NewResultFromResult(res)
 		if err != nil {
-			return nil, fmt.Errorf("could not convert result to current version: %v", err)
+			return nil, logging.Errorf("could not convert result to current version: %v", err)
 		}
 	}
 
@@ -83,7 +86,7 @@ func LoadNetConf(bytes []byte) (*NetConf, error) {
 	// the existing delegate list and all delegates executed in-order.
 
 	if len(netconf.RawDelegates) == 0 {
-		return nil, fmt.Errorf("at least one delegate must be specified")
+		return nil, logging.Errorf("at least one delegate must be specified")
 	}
 
 	if netconf.CNIDir == "" {
@@ -96,11 +99,11 @@ func LoadNetConf(bytes []byte) (*NetConf, error) {
 	for idx, rawConf := range netconf.RawDelegates {
 		bytes, err := json.Marshal(rawConf)
 		if err != nil {
-			return nil, fmt.Errorf("error marshalling delegate %d config: %v", idx, err)
+			return nil, logging.Errorf("error marshalling delegate %d config: %v", idx, err)
 		}
 		delegateConf, err := LoadDelegateNetConf(bytes)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load delegate %d config: %v", idx, err)
+			return nil, logging.Errorf("failed to load delegate %d config: %v", idx, err)
 		}
 		netconf.Delegates = append(netconf.Delegates, delegateConf)
 	}
@@ -114,6 +117,7 @@ func LoadNetConf(bytes []byte) (*NetConf, error) {
 
 // AddDelegates appends the new delegates to the delegates list
 func (n *NetConf) AddDelegates(newDelegates []*DelegateNetConf) error {
+	logging.Debugf("AddDelegates: %v", newDelegates)
 	n.Delegates = append(n.Delegates, newDelegates...)
 	return nil
 }
